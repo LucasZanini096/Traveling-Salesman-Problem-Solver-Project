@@ -1,6 +1,6 @@
-#include "src/tspSolver.c"
-#include "src/operations.c"
-#include "src/tour.c"
+#include "sequential/src/tspSolver.c"
+#include "sequential/src/operations.c"
+#include "sequential/src/tour.c"
 
 // Função principal
 int main(int argc, char* argv[]) {

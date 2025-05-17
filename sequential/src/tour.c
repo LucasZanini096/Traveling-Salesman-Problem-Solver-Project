@@ -7,6 +7,9 @@ int* solveTSP(TSPSolver* solver, int numIterations, int numRestarts) {
     return shotgunHillClimbing(solver, numIterations, numRestarts);
 }
 
+//Aplicação do reducer do OPENMP
+// Grao de paralelismo: cada iteração do loop
+// O loop é paralelizado, mas o resultado final é reduzido para o melhor tour encontrado
 double calculateTourLength(TSPSolver* solver, const int* tour) {
     double length = 0.0;
     for (int i = 0; i < solver->matrixSize; i++) {
@@ -33,7 +36,8 @@ int* generateRandomTour(TSPSolver* solver) {
     return tour;
 }
 
-
+//Paralelizavel -> cada task pode ser executada em paralelo
+// Grão de paralelismo: cada reinicialização do algoritmo
 int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) {
     int* bestTour = NULL;
     double bestLength = DBL_MAX;
@@ -60,7 +64,6 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
 }
 
 // Implementa o algoritmo hill climbing
-// Paralização com o OPENMP
 void hillClimb(TSPSolver* solver, int numIterations, int** bestTourPtr, double* bestLengthPtr) {
     int* currentTour = generateRandomTour(solver);
     double currentLength = calculateTourLength(solver, currentTour);
