@@ -209,6 +209,8 @@ int* solveTSP(TSPSolver* solver, int numIterations, int numRestarts) {
 }
 
 // Calcula o comprimento de um tour
+// Utilização de um reducer ( OPENMP ) para paralelizar o cálculo
+// do comprimento do tour
 double calculateTourLength(TSPSolver* solver, const int* tour) {
     double length = 0.0;
     for (int i = 0; i < solver->matrixSize; i++) {
@@ -272,6 +274,7 @@ void reverseSubArray(int* array, int start, int end) {
 }
 
 // Implementa o shotgun hill climbing
+// Paralização com o OPENMP os restarts
 int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) {
     int* bestTour = NULL;
     double bestLength = DBL_MAX;
@@ -298,6 +301,7 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
 }
 
 // Implementa o algoritmo hill climbing
+// Paralização com o OPENMP
 void hillClimb(TSPSolver* solver, int numIterations, int** bestTourPtr, double* bestLengthPtr) {
     int* currentTour = generateRandomTour(solver);
     double currentLength = calculateTourLength(solver, currentTour);
