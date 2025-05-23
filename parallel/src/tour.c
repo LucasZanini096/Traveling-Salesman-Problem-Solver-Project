@@ -98,31 +98,71 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
 void hillClimb(TSPSolver* solver, int numIterations, int** bestTourPtr, double* bestLengthPtr) {
     int* currentTour = generateRandomTour(solver);
     double currentLength = calculateTourLength(solver, currentTour);
-    int* newTour = (int*)malloc(solver->matrixSize * sizeof(int));
     
     for (int iter = 0; iter < numIterations; iter++) {
-        int improvement = 0;
+        // Variáveis compartilhadas para encontrar a melhor melhoria
+        double bestNewLength = currentLength;
+        int* bestNewTour = NULL;
+        int foundImprovement = 0;
         
-        for (int i = 1; i < solver->matrixSize - 1 && !improvement; i++) {
-            for (int j = i + 1; j < solver->matrixSize && !improvement; j++) {
-                twoOptSwap(currentTour, newTour, i, j, solver->matrixSize);
-                double newLength = calculateTourLength(solver, newTour);
-                
-                if (newLength < currentLength) {
-                    // Troca o tour atual pelo novo
-                    int* tempTour = currentTour;
-                    currentTour = newTour;
-                    newTour = tempTour;
-                    currentLength = newLength;
-                    improvement = 1;
+        #pragma omp parallel //Definição de região paralela
+        {
+            #pragma omp single //Apenas 1 thread executa o bloco
+            {
+                // UMA thread cria todas as tasks
+                for (int i = 1; i < solver->matrixSize - 1; i++) {
+                    for (int j = i + 1; j < solver->matrixSize; j++) {
+                        
+                        // Cria uma TASK para cada combinação (i,j)
+                        #pragma omp task firstprivate(i, j) shared(bestNewLength, bestNewTour, foundImprovement)
+                        {
+                            // Cada task trabalha com sua própria cópia - rota
+                            int* localTour = (int*)malloc(solver->matrixSize * sizeof(int));
+                            
+                            if (!localTour) {
+                                fprintf(stderr, "Memory allocation failed\n");
+                                exit(1);
+                            }
+
+                            // Aplica a operação 2-opt para esta combinação específica
+                            twoOptSwap(currentTour, localTour, i, j, solver->matrixSize);
+                            double localLength = calculateTourLength(solver, localTour);
+                            
+                            // Seção crítica para comparar com a melhor solução
+                            #pragma omp critical
+                            {
+                                if (localLength < bestNewLength) {
+                                    // Libera o tour anterior se existir
+                                    if (bestNewTour) free(bestNewTour);
+                                    
+                                    // Atualiza a melhor solução
+                                    bestNewTour = localTour;
+                                    bestNewLength = localLength;
+                                    foundImprovement = 1;
+                                } else {
+                                    // Libera o tour local se não melhorou
+                                    free(localTour);
+                                }
+                            }
+                        }
+                    }
                 }
             }
+            // Espera todas as tasks terminarem
+            #pragma omp taskwait
         }
         
-        if (!improvement) break;
+        // Verifica se houve melhoria
+        if (foundImprovement) {
+            free(currentTour);
+            currentTour = bestNewTour;
+            currentLength = bestNewLength;
+        } else {
+            // Se não houve melhoria, para o algoritmo
+            if (bestNewTour) free(bestNewTour);
+            break;
+        }
     }
-    
-    free(newTour);
     
     *bestTourPtr = currentTour;
     *bestLengthPtr = currentLength;
