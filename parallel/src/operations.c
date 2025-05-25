@@ -104,6 +104,7 @@ void reverseSubArray(int* array, int start, int end) {
 // Realiza a operação 2-opt swap em um tour
 void twoOptSwap(const int* tour, int* newTour, int i, int j, int tourSize) {
     // Copia o tour original
+    #pragma omp parallel for 
     for (int k = 0; k < tourSize; k++) {
         newTour[k] = tour[k];
     }
