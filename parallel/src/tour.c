@@ -32,14 +32,10 @@ int* generateRandomTour(TSPSolver* solver) {
     if (!tour) return NULL;
     
     // omp_set_num_threads(NUM_THREADS);
-    #pragma omp parallel
-    {
-        // Inicializa o tour com índices sequenciais
-        #pragma omp for
+    #pragma omp parallel for   
         for (int i = 0; i < solver->matrixSize; i++) {
             tour[i] = i;
         }
-    }
     // // Inicializa o tour com índices sequenciais
     // for (int i = 0; i < solver->matrixSize; i++) {
     //     tour[i] = i;
@@ -58,8 +54,20 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
     double bestLength = DBL_MAX;
     
     // omp_set_num_threads(NUM_THREADS);
-    #pragma omp parallel for
-    // Paraleliza o loop com OpenMP
+     // Define o número de threads
+        // Inicializa o melhor tour com NULL e comprimento máximo
+        if (bestTour == NULL) {
+            bestTour = (int*)malloc(solver->matrixSize * sizeof(int));
+            if (!bestTour) {
+                fprintf(stderr, "Memory allocation failed\n");
+                exit(1);
+            }
+        }
+
+        bestLength = DBL_MAX;
+  
+
+    #pragma omp parallel for shared(bestTour, bestLength)
     for (int restart = 0; restart < numRestarts; restart++) {
         int* currentTour = NULL;
         double currentLength = 0.0;
@@ -80,15 +88,6 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
                 free(currentTour);
             }
         }
-        // if (currentLength < bestLength) {
-        //     // Atualiza o melhor tour encontrado
-        //     if (bestTour) free(bestTour);
-        //     bestTour = currentTour;
-        //     bestLength = currentLength;
-        // } else {
-        //     // Libera o tour atual se não for o melhor
-        //     free(currentTour);
-        // }
     }
     
     return bestTour;

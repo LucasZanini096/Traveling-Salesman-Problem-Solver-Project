@@ -114,7 +114,7 @@ void runFullBenchmark(const char* input_file, const char* output_csv) {
     printf("Starting comprehensive TSP benchmark...\n");
     
     // Array de números de threads para testar
-    int thread_counts[] = {1, 2, 4, 8};
+    int thread_counts[] = {1, 2, 4, 8, 16, 32, 64};
     int num_tests = sizeof(thread_counts) / sizeof(thread_counts[0]);
     int num_runs_per_test = 3; // Número de execuções por configuração para média
     
