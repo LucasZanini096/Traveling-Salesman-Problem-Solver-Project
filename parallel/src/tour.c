@@ -16,8 +16,8 @@ double calculateTourLength(TSPSolver* solver, const int* tour) {
     const int size = solver->matrixSize;
     double length = 0.0;
     
-    if (size < 50) {
-        // Para problemas pequenos, execução sequencial pode ser mais eficiente
+    // Para problemas muito pequenos (< 20), usar execução sequencial
+    if (size < 20) {
         for (int i = 0; i < size; i++) {
             int from = tour[i];
             int to = tour[(i + 1) % size];
@@ -32,8 +32,8 @@ double calculateTourLength(TSPSolver* solver, const int* tour) {
             length += solver->adjacencyMatrix[from][to];
         }
     } else {
-        // Para problemas grandes, usar chunking manual para reduzir overhead
-        const int num_threads = omp_get_num_threads();
+        // Para problemas grandes, usar chunking manual
+        const int num_threads = omp_get_max_threads();
         const int chunk_size = (size / num_threads) + 1;
         
         #pragma omp parallel reduction(+:length)
@@ -77,40 +77,67 @@ int* shotgunHillClimbing(TSPSolver* solver, int numIterations, int numRestarts) 
     int* bestTour = NULL;
     double bestLength = DBL_MAX;
     
-    // Usar taskloop para melhor balanceamento de carga
-    #pragma omp parallel
-    {
-        #pragma omp single
-        {
-            // Usar taskloop com grainsize adaptativo baseado no número de threads
-            int grainsize = (numRestarts / omp_get_num_threads()) + 1;
-            if (grainsize < 1) grainsize = 1;
-            if (grainsize > 10) grainsize = 10; // Evitar grãos muito grandes
+    // Estratégia adaptativa baseada no tamanho do problema
+    const int problem_size = solver->matrixSize;
+    const int num_threads = omp_get_max_threads();
+    
+    // Para problemas pequenos, limitar paralelização
+    if (problem_size < 20 && numRestarts < 50) {
+        // Execução sequencial ou com poucos threads
+        omp_set_num_threads(1);
+        
+        for (int restart = 0; restart < numRestarts; restart++) {
+            int* currentTour = NULL;
+            double currentLength = 0.0;
             
-            #pragma omp taskloop grainsize(grainsize) \
-                                firstprivate(numIterations) \
-                                shared(bestTour, bestLength) \
-                                final(numRestarts < 20)
-            for (int restart = 0; restart < numRestarts; restart++) {
-                int* currentTour = NULL;
-                double currentLength = 0.0;
+            TSPSolver localSolver = *solver;
+            localSolver.seed = solver->seed + restart * 1000;
+            
+            hillClimb(&localSolver, numIterations, &currentTour, &currentLength);
+            
+            if (currentLength < bestLength) {
+                if (bestTour) free(bestTour);
+                bestTour = currentTour;
+                bestLength = currentLength;
+            } else {
+                free(currentTour);
+            }
+        }
+        
+        // Restaurar número de threads
+        omp_set_num_threads(num_threads);
+    } else {
+        // Paralelização para problemas maiores
+        #pragma omp parallel
+        {
+            #pragma omp single
+            {
+                int grainsize = (numRestarts / omp_get_num_threads()) + 1;
+                if (grainsize < 5) grainsize = 5;
+                if (grainsize > 20) grainsize = 20;
                 
-                // Usar seed diferente para cada restart para melhor diversidade
-                TSPSolver localSolver = *solver;
-                localSolver.seed = solver->seed + restart * 1000;
-                
-                // Executa hill climbing
-                hillClimb(&localSolver, numIterations, &currentTour, &currentLength);
-                
-                // Zona crítica otimizada - minimize o tempo dentro dela
-                #pragma omp critical(update_best)
-                {
-                    if (currentLength < bestLength) {
-                        if (bestTour) free(bestTour);
-                        bestTour = currentTour;
-                        bestLength = currentLength;
-                    } else {
-                        free(currentTour);
+                #pragma omp taskloop grainsize(grainsize) \
+                                    firstprivate(numIterations) \
+                                    shared(bestTour, bestLength) \
+                                    final(numRestarts < 10)
+                for (int restart = 0; restart < numRestarts; restart++) {
+                    int* currentTour = NULL;
+                    double currentLength = 0.0;
+                    
+                    TSPSolver localSolver = *solver;
+                    localSolver.seed = solver->seed + restart * 1000;
+                    
+                    hillClimb(&localSolver, numIterations, &currentTour, &currentLength);
+                    
+                    #pragma omp critical(update_best)
+                    {
+                        if (currentLength < bestLength) {
+                            if (bestTour) free(bestTour);
+                            bestTour = currentTour;
+                            bestLength = currentLength;
+                        } else {
+                            free(currentTour);
+                        }
                     }
                 }
             }
@@ -125,133 +152,168 @@ void hillClimb(TSPSolver* solver, int numIterations, int** bestTourPtr, double* 
     int* currentTour = generateRandomTour(solver);
     double currentLength = calculateTourLength(solver, currentTour);
     
-    // Definir tamanho mínimo de bloco para evitar overhead excessivo
-    const int MIN_BLOCK_SIZE = 100;
     const int n = solver->matrixSize;
     const int total_combinations = (n-2)*(n-1)/2;
+    const int MIN_BLOCK_SIZE = 100;
     
-    for (int iter = 0; iter < numIterations; iter++) {
-        double bestNewLength = currentLength;
-        int* bestNewTour = NULL;
-        int foundImprovement = 0;
+    // Para problemas pequenos, usar abordagem sequencial
+    if (n < 20 || total_combinations < 50) {
+        int* newTour = (int*)malloc(n * sizeof(int));
+        if (!newTour) {
+            *bestTourPtr = currentTour;
+            *bestLengthPtr = currentLength;
+            return;
+        }
         
-        #pragma omp parallel
-        {
-            #pragma omp single
-            {
-                // Agrupar combinações em blocos maiores para reduzir overhead
-                if (total_combinations > MIN_BLOCK_SIZE) {
-                    // Processar em blocos de tamanho adequado
-                    int block_size = (total_combinations / omp_get_num_threads()) + 1;
-                    if (block_size < MIN_BLOCK_SIZE) block_size = MIN_BLOCK_SIZE;
+        for (int iter = 0; iter < numIterations; iter++) {
+            int improvement = 0;
+            
+            for (int i = 1; i < n - 1 && !improvement; i++) {
+                for (int j = i + 1; j < n && !improvement; j++) {
+                    twoOptSwap(currentTour, newTour, i, j, n);
+                    double newLength = calculateTourLength(solver, newTour);
                     
-                    for (int block_start = 0; block_start < total_combinations; block_start += block_size) {
-                        int block_end = (block_start + block_size < total_combinations) ? 
-                                       block_start + block_size : total_combinations;
+                    if (newLength < currentLength) {
+                        // Troca os ponteiros para evitar cópia
+                        int* tempTour = currentTour;
+                        currentTour = newTour;
+                        newTour = tempTour;
+                        currentLength = newLength;
+                        improvement = 1;
+                    }
+                }
+            }
+            
+            if (!improvement) break;
+        }
+        
+        free(newTour);
+    } else {
+        // Abordagem paralela para problemas maiores
+        for (int iter = 0; iter < numIterations; iter++) {
+            double bestNewLength = currentLength;
+            int* bestNewTour = NULL;
+            int foundImprovement = 0;
+            
+            #pragma omp parallel
+            {
+                #pragma omp single
+                {
+                    // Agrupar combinações em blocos maiores para reduzir overhead
+                    if (total_combinations > MIN_BLOCK_SIZE) {
+                        // Processar em blocos de tamanho adequado
+                        int block_size = (total_combinations / omp_get_num_threads()) + 1;
+                        if (block_size < MIN_BLOCK_SIZE) block_size = MIN_BLOCK_SIZE;
                         
-                        #pragma omp task firstprivate(block_start, block_end) \
-                                        final(block_end - block_start < 50) \
-                                        mergeable \
-                                        shared(bestNewLength, bestNewTour, foundImprovement)
-                        {
-                            // Variáveis locais para esta task
-                            double local_best_length = currentLength;
-                            int* local_best_tour = NULL;
-                            int local_found = 0;
+                        for (int block_start = 0; block_start < total_combinations; block_start += block_size) {
+                            int block_end = (block_start + block_size < total_combinations) ? 
+                                           block_start + block_size : total_combinations;
                             
-                            // Processar bloco de combinações
-                            int combo = 0;
-                            for (int i = 1; i < n - 1 && combo < block_end; i++) {
-                                for (int j = i + 1; j < n && combo < block_end; j++) {
-                                    if (combo >= block_start) {
-                                        // Processa esta combinação
-                                        int* localTour = (int*)malloc(n * sizeof(int));
-                                        if (!localTour) continue;
-                                        
-                                        twoOptSwap(currentTour, localTour, i, j, n);
-                                        double localLength = calculateTourLength(solver, localTour);
-                                        
-                                        if (localLength < local_best_length) {
-                                            if (local_best_tour) free(local_best_tour);
-                                            local_best_tour = localTour;
-                                            local_best_length = localLength;
-                                            local_found = 1;
-                                        } else {
-                                            free(localTour);
+                            #pragma omp task firstprivate(block_start, block_end) \
+                                            final(block_end - block_start < 50) \
+                                            mergeable \
+                                            shared(bestNewLength, bestNewTour, foundImprovement)
+                            {
+                                // Variáveis locais para esta task
+                                double local_best_length = currentLength;
+                                int* local_best_tour = NULL;
+                                int local_found = 0;
+                                
+                                // Processar bloco de combinações
+                                int combo = 0;
+                                for (int i = 1; i < n - 1 && combo < block_end; i++) {
+                                    for (int j = i + 1; j < n && combo < block_end; j++) {
+                                        if (combo >= block_start) {
+                                            // Processa esta combinação
+                                            int* localTour = (int*)malloc(n * sizeof(int));
+                                            if (!localTour) continue;
+                                            
+                                            twoOptSwap(currentTour, localTour, i, j, n);
+                                            double localLength = calculateTourLength(solver, localTour);
+                                            
+                                            if (localLength < local_best_length) {
+                                                if (local_best_tour) free(local_best_tour);
+                                                local_best_tour = localTour;
+                                                local_best_length = localLength;
+                                                local_found = 1;
+                                            } else {
+                                                free(localTour);
+                                            }
                                         }
+                                        combo++;
                                     }
-                                    combo++;
                                 }
-                            }
-                            
-                            // Atualiza resultado global apenas uma vez por task
-                            if (local_found) {
-                                #pragma omp critical
-                                {
-                                    if (local_best_length < bestNewLength) {
-                                        if (bestNewTour) free(bestNewTour);
-                                        bestNewTour = local_best_tour;
-                                        bestNewLength = local_best_length;
-                                        foundImprovement = 1;
-                                    } else {
-                                        free(local_best_tour);
+                                
+                                // Atualiza resultado global apenas uma vez por task
+                                if (local_found) {
+                                    #pragma omp critical(update_best_tour)
+                                    {
+                                        if (local_best_length < bestNewLength) {
+                                            if (bestNewTour) free(bestNewTour);
+                                            bestNewTour = local_best_tour;
+                                            bestNewLength = local_best_length;
+                                            foundImprovement = 1;
+                                        } else {
+                                            free(local_best_tour);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                } else {
-                    // Para problemas pequenos, usar abordagem original mas otimizada
-                    for (int i = 1; i < n - 1; i++) {
-                        #pragma omp task firstprivate(i) final(n < 20) mergeable \
-                                        shared(bestNewLength, bestNewTour, foundImprovement)
-                        {
-                            double local_best = currentLength;
-                            int* local_tour = NULL;
-                            
-                            for (int j = i + 1; j < n; j++) {
-                                int* testTour = (int*)malloc(n * sizeof(int));
-                                if (!testTour) continue;
+                    } else {
+                        // Para problemas pequenos mas que usam paralelização, usar abordagem otimizada
+                        for (int i = 1; i < n - 1; i++) {
+                            #pragma omp task firstprivate(i) final(n < 20) mergeable \
+                                            shared(bestNewLength, bestNewTour, foundImprovement)
+                            {
+                                double local_best = currentLength;
+                                int* local_tour = NULL;
                                 
-                                twoOptSwap(currentTour, testTour, i, j, n);
-                                double testLength = calculateTourLength(solver, testTour);
-                                
-                                if (testLength < local_best) {
-                                    if (local_tour) free(local_tour);
-                                    local_tour = testTour;
-                                    local_best = testLength;
-                                } else {
-                                    free(testTour);
-                                }
-                            }
-                            
-                            if (local_tour) {
-                                #pragma omp critical
-                                {
-                                    if (local_best < bestNewLength) {
-                                        if (bestNewTour) free(bestNewTour);
-                                        bestNewTour = local_tour;
-                                        bestNewLength = local_best;
-                                        foundImprovement = 1;
+                                for (int j = i + 1; j < n; j++) {
+                                    int* testTour = (int*)malloc(n * sizeof(int));
+                                    if (!testTour) continue;
+                                    
+                                    twoOptSwap(currentTour, testTour, i, j, n);
+                                    double testLength = calculateTourLength(solver, testTour);
+                                    
+                                    if (testLength < local_best) {
+                                        if (local_tour) free(local_tour);
+                                        local_tour = testTour;
+                                        local_best = testLength;
                                     } else {
-                                        free(local_tour);
+                                        free(testTour);
+                                    }
+                                }
+                                
+                                if (local_tour) {
+                                    #pragma omp critical(update_best_tour)
+                                    {
+                                        if (local_best < bestNewLength) {
+                                            if (bestNewTour) free(bestNewTour);
+                                            bestNewTour = local_tour;
+                                            bestNewLength = local_best;
+                                            foundImprovement = 1;
+                                        } else {
+                                            free(local_tour);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                #pragma omp taskwait
             }
-            #pragma omp taskwait
-        }
-        
-        if (foundImprovement) {
-            free(currentTour);
-            currentTour = bestNewTour;
-            currentLength = bestNewLength;
-        } else {
-            if (bestNewTour) free(bestNewTour);
-            break;
+            
+            // Atualiza o tour atual se houve melhoria
+            if (foundImprovement) {
+                free(currentTour);
+                currentTour = bestNewTour;
+                currentLength = bestNewLength;
+            } else {
+                if (bestNewTour) free(bestNewTour);
+                break; // Para se não houve melhoria
+            }
         }
     }
     
